@@ -1,0 +1,99 @@
+name: Quarterly Contribution Impact Report Fallback
+
+on:
+  workflow_run:
+    workflows:
+      - Quarterly Contribution Impact Report
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Report window start date (YYYY-MM-DD). Defaults to 90 days ago."
+        required: false
+        type: string
+      end_date:
+        description: "Report window end date (YYYY-MM-DD). Defaults to today UTC."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: quarterly-report-fallback
+  cancel-in-progress: false
+
+jobs:
+  fallback:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set report window
+        id: window
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SINCE=""
+          UNTIL=""
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SINCE="${{ github.event.inputs.start_date || '' }}"
+            UNTIL="${{ github.event.inputs.end_date || '' }}"
+          fi
+
+          if [ -z "$SINCE" ]; then
+            SINCE=$(date -u -d '90 days ago' '+%Y-%m-%d')
+          fi
+
+          if [ -z "$UNTIL" ]; then
+            UNTIL=$(date -u '+%Y-%m-%d')
+          fi
+
+          echo "$SINCE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || {
+            echo "::error::Invalid start_date '$SINCE'. Expected YYYY-MM-DD."
+            exit 1
+          }
+
+          echo "$UNTIL" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || {
+            echo "::error::Invalid end_date '$UNTIL'. Expected YYYY-MM-DD."
+            exit 1
+          }
+
+          if [ "$SINCE" \> "$UNTIL" ]; then
+            echo "::error::start_date ($SINCE) is after end_date ($UNTIL)"
+            exit 1
+          fi
+
+          echo "since=$SINCE" >> "$GITHUB_OUTPUT"
+          echo "until=$UNTIL" >> "$GITHUB_OUTPUT"
+
+          echo "Report window: $SINCE to $UNTIL"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Run script fallback
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/quarterly-report.py \
+            --start-date "${{ steps.window.outputs.since }}" \
+            --end-date "${{ steps.window.outputs.until }}" \
+            --org adoptium
